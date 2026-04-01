@@ -3,23 +3,23 @@
   --host localhost \
   --port 3306 \
   --user root \
-  --password "Sonika@1987" \
+  --password "S" \
   --database funding_manage \
   --output ./backup \
   --workers 8
 
- ./mysqltool export --host 91.107.184.128 --port 3306 --user teneweweweey --password dew3ewwe23e3!
+ ./mysqltool export --host 127.1.184.128 --port 3306 --user teneweweweey --password d7r838ehdhr
    --database ewe2323232 --output ./backup2 --workers 20 --compress --rows-per-batch 500000
 
 
 
 ./mysqltool export-parallel \
-  --host 91.107.184.128 \
+  --host 127.01.184.128 \
   --port 3306 \
   --strategy parallel \
   --user g222222 \
   --password "7D222!" \
-  --database tens_tensormoney \
+  --database tensoney \
   --output ./bac_me3 \
   --workers 30 \
   --partitions 16 \
@@ -34,7 +34,7 @@ go build -o mysqltool main.go
 
 # Run the export
 ./mysqltool export \
-  --host 91.107.184.128 \
+  --host 91.89.184.128 \
   --port 3306 \
   --user e423232332 \
   --password "7D3GqL7*!" \
