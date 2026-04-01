@@ -25,7 +25,7 @@
   --host localhost \
   --port 3306 \
   --user root \
-  --password "Sonika@1987" \
+  --password "u" \
   --database funding_manage \
   --output ./backup \
   --workers 8
