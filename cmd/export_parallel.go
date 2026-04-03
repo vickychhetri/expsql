@@ -71,6 +71,8 @@ Features:
 			}
 		}
 
+		// encPassword := url.QueryEscape(dbPass)
+
 		// Build database connection string
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&multiStatements=true",
 			dbUser, dbPass, dbHost, dbPort, dbName)

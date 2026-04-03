@@ -22,6 +22,7 @@ type AdvancedExporter struct {
 }
 
 func NewAdvancedExporter(dsn string, config *ExporterConfig, advConfig *AdvancedConfig) (*AdvancedExporter, error) {
+	fmt.Println(dsn)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
