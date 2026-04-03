@@ -30,7 +30,8 @@ func NewAdvancedExporter(dsn string, config *ExporterConfig, advConfig *Advanced
 	// Configure connection pool
 	db.SetMaxOpenConns(config.Workers * 2)
 	db.SetMaxIdleConns(config.Workers)
-	db.SetConnMaxLifetime(0)
+	// db.SetConnMaxLifetime(0)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %v", err)
