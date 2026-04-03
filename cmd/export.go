@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -28,6 +30,7 @@ The export creates separate files for:
 - Design: DDL statements for tables, views, functions, procedures, triggers, events
 - Data: Data dumps for each table with concurrent export`,
 	Run: func(cmd *cobra.Command, args []string) {
+		startTime := time.Now()
 		// Validate flags
 		if workers <= 0 {
 			log.Fatal("Workers must be greater than 0")
@@ -66,7 +69,15 @@ The export creates separate files for:
 			log.Fatalf("Export failed: %v", err)
 		}
 
-		log.Println("Export completed successfully!")
+		endTime := time.Now()
+		duration := endTime.Sub(startTime)
+
+		log.Printf("\n" + strings.Repeat("=", 50))
+		log.Printf("✅ Export completed successfully!")
+		log.Printf("⏱️  Total time: %s", duration)
+		log.Printf("📅 Started: %s", startTime.Format("2006-01-02 15:04:05"))
+		log.Printf("🏁 Completed: %s", endTime.Format("2006-01-02 15:04:05"))
+		log.Printf(strings.Repeat("=", 50))
 	},
 }
 
