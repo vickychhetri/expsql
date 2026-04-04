@@ -123,38 +123,67 @@ func (pte *ParallelTableExporter) ExportTableDataParallel() error {
 	sem := make(chan struct{}, pte.config.Workers) // limit concurrency
 
 	for i := 0; i < pte.partitions; i++ {
-		startVal := minVal + (int64(i) * partitionSize)
-		endVal := minVal + (int64(i+1) * partitionSize)
 
+		startVal := minVal + int64(i)*partitionSize
+		endVal := startVal + partitionSize - 1
+
+		// Last partition takes full range
 		if i == pte.partitions-1 {
 			endVal = maxVal
 		}
 
-		if i == 0 {
-			startVal = minVal
-		}
-
 		wg.Add(1)
-		sem <- struct{}{} // acquire
+		sem <- struct{}{}
 
 		go func(partition int, start, end int64) {
 			defer wg.Done()
-			defer func() { <-sem }() // release
+			defer func() { <-sem }()
 
 			filename := fmt.Sprintf("data_%s_part%d.sql", pte.tableName, partition)
-			err := pte.exportPartition(start, end, filename, columns, columnTypes)
-			// err := safeQuery(func() error {
-			// 	log.Printf("Partition %d: exporting rows where %s between %d and %d",
-			// 		partition, pte.pkColumn, start, end)
 
-			// 	return
-			// })
+			log.Printf("Partition %d: %s BETWEEN %d AND %d",
+				partition, pte.pkColumn, start, end)
+
+			err := pte.exportPartition(start, end, filename, columns, columnTypes)
 
 			if err != nil {
 				errChan <- fmt.Errorf("partition %d failed: %v", partition, err)
 			}
 		}(i, startVal, endVal)
 	}
+	// for i := 0; i < pte.partitions; i++ {
+	// 	startVal := minVal + (int64(i) * partitionSize)
+	// 	endVal := minVal + (int64(i+1) * partitionSize)
+
+	// 	if i == pte.partitions-1 {
+	// 		endVal = maxVal
+	// 	}
+
+	// 	if i == 0 {
+	// 		startVal = minVal
+	// 	}
+
+	// 	wg.Add(1)
+	// 	sem <- struct{}{} // acquire
+
+	// 	go func(partition int, start, end int64) {
+	// 		defer wg.Done()
+	// 		defer func() { <-sem }() // release
+
+	// 		filename := fmt.Sprintf("data_%s_part%d.sql", pte.tableName, partition)
+	// 		err := pte.exportPartition(start, end, filename, columns, columnTypes)
+	// 		// err := safeQuery(func() error {
+	// 		// 	log.Printf("Partition %d: exporting rows where %s between %d and %d",
+	// 		// 		partition, pte.pkColumn, start, end)
+
+	// 		// 	return
+	// 		// })
+
+	// 		if err != nil {
+	// 			errChan <- fmt.Errorf("partition %d failed: %v", partition, err)
+	// 		}
+	// 	}(i, startVal, endVal)
+	// }
 	// for i := 0; i < pte.partitions; i++ {
 	// 	startVal := minVal + (int64(i) * partitionSize)
 	// 	endVal := minVal + (int64(i+1) * partitionSize)
@@ -530,6 +559,8 @@ func (pte *ParallelTableExporter) buildInsertStatement(columns []string, values 
 		colType := columnTypes[i].DatabaseTypeName()
 
 		switch v := val.(type) {
+		case time.Time:
+			valueStrings[i] = fmt.Sprintf("'%s'", v.UTC().Format("2006-01-02 15:04:05"))
 		case string:
 			escaped := strings.ReplaceAll(v, "\\", "\\\\")
 			escaped = strings.ReplaceAll(escaped, "'", "''")
