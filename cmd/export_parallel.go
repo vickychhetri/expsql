@@ -11,18 +11,20 @@ import (
 )
 
 var (
-	parallelExportDir     string
-	parallelWorkers       int
-	parallelRowsPerBatch  int
-	parallelCompress      bool
-	parallelIncludeData   bool
-	parallelIncludeDesign bool
-	parallelTables        []string
-	parallelExcludeTables []string
-	parallelStrategy      string // auto, parallel, streaming, standard
-	parallelPartitions    int    // number of partitions for parallel export
-	parallelResumable     bool   // enable resumable export
-	parallelProgressDir   string // directory for progress files
+	parallelExportDir           string
+	parallelWorkers             int
+	parallelRowsPerBatch        int
+	parallelCompress            bool
+	parallelIncludeData         bool
+	parallelIncludeDesign       bool
+	parallelTables              []string
+	parallelExcludeTables       []string
+	parallelStrategy            string // auto, parallel, streaming, standard
+	parallelPartitions          int    // number of partitions for parallel export
+	parallelResumable           bool   // enable resumable export
+	parallelProgressDir         string // directory for progress files
+	parallelBulkInsertSize      int    // size of bulk insert operations
+	parallelSmallTableThreshold int    // threshold for considering a table as small
 )
 
 var exportParallelCmd = &cobra.Command{
@@ -79,14 +81,16 @@ Features:
 
 		// Create exporter configuration
 		config := &exporter.ExporterConfig{
-			OutputDir:     parallelExportDir,
-			Workers:       parallelWorkers,
-			RowsPerBatch:  parallelRowsPerBatch,
-			Compress:      parallelCompress,
-			IncludeData:   parallelIncludeData,
-			IncludeDesign: parallelIncludeDesign,
-			Tables:        parallelTables,
-			ExcludeTables: parallelExcludeTables,
+			OutputDir:           parallelExportDir,
+			Workers:             parallelWorkers,
+			RowsPerBatch:        parallelRowsPerBatch,
+			Compress:            parallelCompress,
+			IncludeData:         parallelIncludeData,
+			IncludeDesign:       parallelIncludeDesign,
+			Tables:              parallelTables,
+			ExcludeTables:       parallelExcludeTables,
+			BulkInsertSize:      parallelBulkInsertSize,
+			SmallTableThreshold: 1000, // Set a default threshold for small tables
 		}
 
 		// Create advanced exporter
@@ -122,6 +126,8 @@ func init() {
 	exportParallelCmd.Flags().BoolVar(&parallelIncludeDesign, "include-design", true, "Include database design")
 	exportParallelCmd.Flags().StringSliceVar(&parallelTables, "tables", []string{}, "Specific tables to export")
 	exportParallelCmd.Flags().StringSliceVar(&parallelExcludeTables, "exclude-tables", []string{}, "Tables to exclude")
+	exportParallelCmd.Flags().IntVar(&parallelBulkInsertSize, "bulk-size", 1000, "Rows per bulk INSERT")
+	exportParallelCmd.Flags().IntVar(&parallelSmallTableThreshold, "small-table-threshold", 1000, "Threshold for considering a table as small")
 
 	// Advanced flags
 	exportParallelCmd.Flags().StringVar(&parallelStrategy, "strategy", "auto",

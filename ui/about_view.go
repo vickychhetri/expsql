@@ -11,70 +11,65 @@ import (
 
 func (a *App) createAboutView() fyne.CanvasObject {
 
-	title := widget.NewLabelWithStyle(
-		"MySQL DataStream",
-		fyne.TextAlignCenter,
-		fyne.TextStyle{Bold: true},
-	)
+	makeText := func(s string, bold bool) *widget.Label {
+		t := widget.NewLabel(s)
+		t.Alignment = fyne.TextAlignCenter
+		t.Wrapping = fyne.TextWrapWord
+		if bold {
+			t.TextStyle = fyne.TextStyle{Bold: true}
+		}
+		return t
+	}
 
-	version := widget.NewLabelWithStyle(
-		"Version 1.0.0",
-		fyne.TextAlignCenter,
-		fyne.TextStyle{},
-	)
+	title := makeText("MySQL DataStream", true)
+	version := makeText("v1.0.0", false)
 
 	header := container.NewVBox(title, version)
 
-	// Description Card
-	descCard := widget.NewCard(
-		"About",
-		"",
-		widget.NewLabel("High-performance MySQL export/import tool designed for large-scale data operations."),
+	desc := widget.NewCard("", "",
+		makeText("High-performance MySQL export/import tool for large-scale data operations.", false),
 	)
 
-	// Features Card
-	features := container.NewVBox(
-		widget.NewLabel("• Concurrent export/import with configurable workers"),
-		widget.NewLabel("• Handles large databases (50GB+)"),
-		widget.NewLabel("• Multiple export strategies"),
-		widget.NewLabel("• Separate schema and data files"),
+	features := widget.NewCard("Key Features", "",
+		container.NewVBox(
+			makeText("• Concurrent processing", false),
+			makeText("• Large dataset support", false),
+			makeText("• Multiple export strategies", false),
+			makeText("• Schema & data separation", false),
+		),
 	)
 
-	featuresCard := widget.NewCard("Features", "", features)
-
-	// Technical Info Card
-	tech := container.NewVBox(
-		widget.NewLabel(fmt.Sprintf("Go Version: %s", runtime.Version())),
-		widget.NewLabel(fmt.Sprintf("OS/Arch: %s/%s", runtime.GOOS, runtime.GOARCH)),
+	tech := widget.NewCard("System", "",
+		container.NewVBox(
+			makeText(runtime.Version(), false),
+			makeText(fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH), false),
+		),
 	)
 
-	techCard := widget.NewCard("Technical Info", "", tech)
-
-	// Author Card
-	author := container.NewVBox(
-		widget.NewLabelWithStyle("Vicky Chhetri", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("Website: vickychhetri.com"),
-		widget.NewLabel("GitHub: github.com/vickychhetri"),
+	author := widget.NewCard("", "",
+		container.NewVBox(
+			makeText("Vicky Chhetri", true),
+			makeText("vickychhetri.com", false),
+		),
 	)
 
-	authorCard := widget.NewCard("Author", "", author)
+	footer := makeText("© 2026", false)
 
-	// Footer
-	footer := widget.NewLabelWithStyle(
-		"© 2026 MySQL DataStream",
-		fyne.TextAlignCenter,
-		fyne.TextStyle{Italic: true},
-	)
-
-	// Main layout (compact + centered)
 	content := container.NewVBox(
 		header,
-		descCard,
-		featuresCard,
-		techCard,
-		authorCard,
+		desc,
+		features,
+		tech,
+		author,
 		footer,
 	)
 
-	return container.NewCenter(container.NewPadded(content))
+	wrapped := container.NewCenter(
+		container.NewGridWrap(
+			fyne.NewSize(420, 600),
+			container.NewPadded(content),
+		),
+	)
+
+	return container.NewVScroll(wrapped)
 }

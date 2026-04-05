@@ -43,6 +43,9 @@ func (a *App) createExportView() fyne.CanvasObject {
 	batchSizeEntry := widget.NewEntry()
 	batchSizeEntry.SetText(fmt.Sprintf("%d", a.Settings.BatchSize))
 
+	bulkInsertSizeEntry := widget.NewEntry()
+	bulkInsertSizeEntry.SetText(fmt.Sprintf("%d", a.Settings.BatchSize))
+
 	// Strategy selection
 	strategySelect := widget.NewSelect(
 		[]string{"auto", "parallel", "streaming", "standard"},
@@ -146,7 +149,7 @@ func (a *App) createExportView() fyne.CanvasObject {
 				strategySelect.Selected, compressCheck.Checked, resumableCheck.Checked,
 				includeDataCheck.Checked, includeDesignCheck.Checked,
 				tablesEntry.Text, excludeTablesEntry.Text,
-				logArea, progressBar,
+				logArea, progressBar, bulkInsertSizeEntry.Text,
 			)
 
 			endTime := time.Now()
@@ -217,6 +220,7 @@ func (a *App) createExportView() fyne.CanvasObject {
 			{Text: "Workers", Widget: workersEntry},
 			{Text: "Batch Size", Widget: batchSizeEntry},
 			{Text: "Strategy", Widget: strategySelect},
+			{Text: "Bulk Insert Size", Widget: bulkInsertSizeEntry},
 		},
 	}
 
@@ -297,7 +301,7 @@ func (a *App) runExportCommand(
 	host, port, user, password, database, outputDir, workers, batchSize, strategy string,
 	compress, resumable, includeData, includeDesign bool,
 	tables, excludeTables string,
-	logArea *widget.Entry, progressBar *widget.ProgressBarInfinite,
+	logArea *widget.Entry, progressBar *widget.ProgressBarInfinite, bulkSize string,
 ) error {
 
 	ui := func(fn func()) {
@@ -315,6 +319,7 @@ func (a *App) runExportCommand(
 		"--output", outputDir,
 		"--workers", workers,
 		"--rows-per-batch", batchSize,
+		"--bulk-size", bulkSize,
 		"--strategy", strategy,
 	}
 

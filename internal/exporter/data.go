@@ -24,11 +24,10 @@ func NewDataExporter(db *sql.DB, config *ExporterConfig) *DataExporter {
 }
 
 func (d *DataExporter) ExportTableData(tableName string) error {
-	// Get total row count
+	// Count rows
 	var totalRows int64
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM `%s`", tableName)
-	err := d.db.QueryRow(countQuery).Scan(&totalRows)
-	if err != nil {
+	if err := d.db.QueryRow(countQuery).Scan(&totalRows); err != nil {
 		return fmt.Errorf("failed to count rows in %s: %v", tableName, err)
 	}
 
@@ -39,7 +38,7 @@ func (d *DataExporter) ExportTableData(tableName string) error {
 
 	log.Printf("Table %s has %d rows to export", tableName, totalRows)
 
-	// Create data file for this table
+	// File setup
 	filename := fmt.Sprintf("data_%s.sql", tableName)
 	filePath := filepath.Join(d.config.OutputDir, filename)
 
@@ -49,10 +48,10 @@ func (d *DataExporter) ExportTableData(tableName string) error {
 	}
 	defer file.Close()
 
-	writer := bufio.NewWriterSize(file, 1024*1024) // 1MB buffer
+	writer := bufio.NewWriterSize(file, 1024*1024)
 	defer writer.Flush()
 
-	// Get column names and types
+	// Get columns
 	columns, columnTypes, err := d.getTableColumns(tableName)
 	if err != nil {
 		return err
@@ -62,16 +61,21 @@ func (d *DataExporter) ExportTableData(tableName string) error {
 		return fmt.Errorf("no columns found for table %s", tableName)
 	}
 
-	// Write header
+	// Header
 	writer.WriteString(fmt.Sprintf("-- Data for table: %s\n", tableName))
 	writer.WriteString(fmt.Sprintf("-- Total rows: %d\n", totalRows))
 	writer.WriteString("-- ============================================\n\n")
 	writer.WriteString(fmt.Sprintf("LOCK TABLES `%s` WRITE;\n", tableName))
 	writer.WriteString(fmt.Sprintf("/*!40000 ALTER TABLE `%s` DISABLE KEYS */;\n\n", tableName))
 
-	// Export data in batches
-	offset := 0
+	// Bulk config
 	batchSize := d.config.RowsPerBatch
+	bulkSize := d.config.BulkInsertSize
+	if bulkSize <= 0 {
+		bulkSize = 1000
+	}
+
+	offset := 0
 	rowsExported := 0
 
 	for offset < int(totalRows) {
@@ -83,10 +87,10 @@ func (d *DataExporter) ExportTableData(tableName string) error {
 			return fmt.Errorf("query failed for table %s: %v", tableName, err)
 		}
 
-		// Process batch
+		var valueBuffer []string
 		batchCount := 0
+
 		for rows.Next() {
-			// Create value holders
 			values := make([]interface{}, len(columns))
 			valuePtrs := make([]interface{}, len(columns))
 			for i := range values {
@@ -98,28 +102,36 @@ func (d *DataExporter) ExportTableData(tableName string) error {
 				return fmt.Errorf("scan failed for table %s: %v", tableName, err)
 			}
 
-			// Build INSERT statement
-			insertStmt := d.buildInsertStatement(tableName, columns, values, columnTypes)
-			if _, err := writer.WriteString(insertStmt); err != nil {
-				rows.Close()
-				return err
+			valueStr := d.buildValuesOnly(values, columnTypes)
+			valueBuffer = append(valueBuffer, valueStr)
+
+			// Flush bulk insert
+			if len(valueBuffer) >= bulkSize {
+				d.writeBulkInsert(writer, tableName, columns, valueBuffer)
+				valueBuffer = valueBuffer[:0]
 			}
+
 			batchCount++
 			rowsExported++
 		}
 
 		rows.Close()
 
-		if batchCount > 0 {
-			writer.WriteString("\n")
+		// Flush remaining
+		if len(valueBuffer) > 0 {
+			d.writeBulkInsert(writer, tableName, columns, valueBuffer)
+			valueBuffer = valueBuffer[:0]
 		}
 
 		offset += batchSize
 
-		// Flush periodically
 		if rowsExported%10000 == 0 {
 			writer.Flush()
-			log.Printf("  Exported %d/%d rows from %s", rowsExported, totalRows, tableName)
+			log.Printf("Exported %d/%d rows from %s", rowsExported, totalRows, tableName)
+		}
+
+		if batchCount > 0 {
+			writer.WriteString("\n")
 		}
 	}
 
@@ -131,8 +143,11 @@ func (d *DataExporter) ExportTableData(tableName string) error {
 	return nil
 }
 
+// -------------------- HELPERS --------------------
+
 func (d *DataExporter) getTableColumns(tableName string) ([]string, []*sql.ColumnType, error) {
 	query := fmt.Sprintf("SELECT * FROM `%s` LIMIT 0", tableName)
+
 	rows, err := d.db.Query(query)
 	if err != nil {
 		return nil, nil, err
@@ -152,55 +167,40 @@ func (d *DataExporter) getTableColumns(tableName string) ([]string, []*sql.Colum
 	return columns, columnTypes, nil
 }
 
-func (d *DataExporter) buildInsertStatement(tableName string, columns []string, values []interface{}, columnTypes []*sql.ColumnType) string {
-	// Build column list
-	columnList := make([]string, len(columns))
-	for i, col := range columns {
-		columnList[i] = fmt.Sprintf("`%s`", col)
-	}
-
-	// Build value list
+func (d *DataExporter) buildValuesOnly(values []interface{}, columnTypes []*sql.ColumnType) string {
 	valueStrings := make([]string, len(values))
+
 	for i, val := range values {
 		if val == nil {
 			valueStrings[i] = "NULL"
 			continue
 		}
 
-		// Get column type for proper formatting
-		colType := columnTypes[i].DatabaseTypeName()
+		colType := strings.ToLower(columnTypes[i].DatabaseTypeName())
 
 		switch v := val.(type) {
 		case string:
-			// Escape single quotes and backslashes
 			escaped := strings.ReplaceAll(v, "\\", "\\\\")
 			escaped = strings.ReplaceAll(escaped, "'", "''")
 			valueStrings[i] = fmt.Sprintf("'%s'", escaped)
 
 		case []byte:
-			// Check if it's a text type or binary
-			isBinary := strings.Contains(strings.ToLower(colType), "blob") ||
-				strings.Contains(strings.ToLower(colType), "binary")
+			isBinary := strings.Contains(colType, "blob") || strings.Contains(colType, "binary")
 
 			if isBinary {
-				// Encode binary data as base64
 				encoded := base64.StdEncoding.EncodeToString(v)
 				valueStrings[i] = fmt.Sprintf("FROM_BASE64('%s')", encoded)
 			} else {
-				// Treat as string
 				str := string(v)
 				escaped := strings.ReplaceAll(str, "\\", "\\\\")
 				escaped = strings.ReplaceAll(escaped, "'", "''")
 				valueStrings[i] = fmt.Sprintf("'%s'", escaped)
 			}
 
-		case int, int8, int16, int32, int64:
+		case int64:
 			valueStrings[i] = fmt.Sprintf("%d", v)
 
-		case uint, uint8, uint16, uint32, uint64:
-			valueStrings[i] = fmt.Sprintf("%d", v)
-
-		case float32, float64:
+		case float64:
 			valueStrings[i] = fmt.Sprintf("%v", v)
 
 		case bool:
@@ -211,7 +211,6 @@ func (d *DataExporter) buildInsertStatement(tableName string, columns []string, 
 			}
 
 		default:
-			// For other types, convert to string
 			str := fmt.Sprintf("%v", v)
 			escaped := strings.ReplaceAll(str, "\\", "\\\\")
 			escaped = strings.ReplaceAll(escaped, "'", "''")
@@ -219,6 +218,26 @@ func (d *DataExporter) buildInsertStatement(tableName string, columns []string, 
 		}
 	}
 
-	return fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s);\n",
-		tableName, strings.Join(columnList, ", "), strings.Join(valueStrings, ", "))
+	return fmt.Sprintf("(%s)", strings.Join(valueStrings, ", "))
+}
+
+func (d *DataExporter) writeBulkInsert(
+	writer *bufio.Writer,
+	tableName string,
+	columns []string,
+	values []string,
+) {
+	columnList := make([]string, len(columns))
+	for i, col := range columns {
+		columnList[i] = fmt.Sprintf("`%s`", col)
+	}
+
+	stmt := fmt.Sprintf(
+		"INSERT INTO `%s` (%s) VALUES\n%s;\n",
+		tableName,
+		strings.Join(columnList, ", "),
+		strings.Join(values, ",\n"),
+	)
+
+	writer.WriteString(stmt)
 }

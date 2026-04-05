@@ -10,15 +10,17 @@ import (
 )
 
 type ExporterConfig struct {
-	OutputDir     string
-	Workers       int
-	RowsPerBatch  int
-	Compress      bool
-	IncludeData   bool
-	IncludeDesign bool
-	Tables        []string
-	ExcludeTables []string
-	DatabaseName  string // Add this field
+	OutputDir           string
+	Workers             int
+	RowsPerBatch        int
+	Compress            bool
+	IncludeData         bool
+	IncludeDesign       bool
+	Tables              []string
+	ExcludeTables       []string
+	DatabaseName        string // Add this field
+	BulkInsertSize      int
+	SmallTableThreshold int
 }
 
 type Exporter struct {

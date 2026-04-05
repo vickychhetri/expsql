@@ -1,4 +1,3 @@
-// internal/exporter/resumable_exporter.go
 package exporter
 
 import (
@@ -7,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,14 +14,14 @@ import (
 )
 
 type ExportProgress struct {
-	TableName      string    `json:"table_name"`
-	LastExportedID int64     `json:"last_exported_id"`
-	RowsExported   int64     `json:"rows_exported"`
-	TotalRows      int64     `json:"total_rows"`
-	StartTime      time.Time `json:"start_time"`
-	LastUpdate     time.Time `json:"last_update"`
-	Status         string    `json:"status"` // running, paused, completed, failed
-	FileName       string    `json:"file_name"`
+	TableName         string    `json:"table_name"`
+	LastExportedValue string    `json:"last_exported_value"`
+	RowsExported      int64     `json:"rows_exported"`
+	TotalRows         int64     `json:"total_rows"`
+	StartTime         time.Time `json:"start_time"`
+	LastUpdate        time.Time `json:"last_update"`
+	Status            string    `json:"status"`
+	FileName          string    `json:"file_name"`
 }
 
 type ResumableExporter struct {
@@ -33,91 +31,67 @@ type ResumableExporter struct {
 }
 
 func NewResumableExporter(db *sql.DB, config *ExporterConfig, progressDir string) *ResumableExporter {
-	// Create progress directory if it doesn't exist
 	os.MkdirAll(progressDir, 0755)
-
-	return &ResumableExporter{
-		db:          db,
-		config:      config,
-		progressDir: progressDir,
-	}
+	return &ResumableExporter{db: db, config: config, progressDir: progressDir}
 }
 
 func (re *ResumableExporter) ExportWithResume(tableName string) error {
-	// Check for existing progress
 	progress := re.loadProgress(tableName)
 
 	if progress != nil && progress.Status == "running" {
-		log.Printf("Resuming export of %s from row %d (already exported %d rows)",
-			tableName, progress.LastExportedID, progress.RowsExported)
-		return re.resumeExport(progress)
+		log.Printf("Resuming %s from %s", tableName, progress.LastExportedValue)
+		return re.exportInBatches(progress)
 	}
 
-	// Start fresh export
-	log.Printf("Starting fresh export of %s", tableName)
 	return re.startNewExport(tableName)
 }
 
 func (re *ResumableExporter) startNewExport(tableName string) error {
-	// Get total rows
 	var totalRows int64
+
 	err := re.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM `%s`", tableName)).Scan(&totalRows)
 	if err != nil {
 		return err
 	}
 
 	if totalRows == 0 {
-		log.Printf("Table %s is empty", tableName)
+		log.Printf("Table %s empty", tableName)
 		return nil
 	}
 
 	filename := fmt.Sprintf("data_%s_resumable.sql", tableName)
-	filePath := filepath.Join(re.config.OutputDir, filename)
 
 	progress := &ExportProgress{
-		TableName:      tableName,
-		LastExportedID: 0,
-		RowsExported:   0,
-		TotalRows:      totalRows,
-		StartTime:      time.Now(),
-		LastUpdate:     time.Now(),
-		Status:         "running",
-		FileName:       filename,
+		TableName: tableName,
+		TotalRows: totalRows,
+		StartTime: time.Now(),
+		Status:    "running",
+		FileName:  filename,
 	}
 
 	re.saveProgress(progress)
 
-	return re.exportInBatches(progress, filePath)
+	return re.exportInBatches(progress)
 }
 
-func (re *ResumableExporter) resumeExport(progress *ExportProgress) error {
-	filename := progress.FileName
-	filePath := filepath.Join(re.config.OutputDir, filename)
+func (re *ResumableExporter) exportInBatches(progress *ExportProgress) error {
 
-	// Open file in append mode
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	log.Printf("Resuming export to file: %s", filename)
-
-	return re.exportInBatches(progress, filePath)
-}
-
-func (re *ResumableExporter) exportInBatches(progress *ExportProgress, filePath string) error {
-	batchSize := re.config.RowsPerBatch
-
-	// Get columns
 	columns, columnTypes, err := re.getTableColumns(progress.TableName)
 	if err != nil {
-		progress.Status = "failed"
-		re.saveProgress(progress)
 		return err
 	}
 
-	// Open file for writing
+	// 🔥 FIXED PK DETECTION
+	pkColumn, pkIndex, err := re.getPrimaryKey(progress.TableName, columns)
+
+	// 🔥 FALLBACK IF NO PK
+	if err != nil || pkColumn == "" {
+		log.Printf("⚠️ Table %s has no primary key → fallback export", progress.TableName)
+		return re.exportWithoutPK(progress, columns, columnTypes)
+	}
+
+	filePath := filepath.Join(re.config.OutputDir, progress.FileName)
+
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
@@ -127,90 +101,112 @@ func (re *ResumableExporter) exportInBatches(progress *ExportProgress, filePath 
 	writer := bufio.NewWriterSize(file, 1024*1024)
 	defer writer.Flush()
 
-	// Write header if this is a new file
 	if progress.RowsExported == 0 {
-		writer.WriteString(fmt.Sprintf("-- Resumable export for table: %s\n", progress.TableName))
-		writer.WriteString(fmt.Sprintf("-- Total rows: %d\n", progress.TotalRows))
-		writer.WriteString("-- ============================================\n\n")
 		writer.WriteString(fmt.Sprintf("LOCK TABLES `%s` WRITE;\n", progress.TableName))
 		writer.WriteString(fmt.Sprintf("/*!40000 ALTER TABLE `%s` DISABLE KEYS */;\n\n", progress.TableName))
 	}
 
+	batchSize := re.config.RowsPerBatch
+	bulkSize := re.config.BulkInsertSize
+	if bulkSize <= 0 {
+		bulkSize = 1000
+	}
+
+	var buffer []string
 	startTime := time.Now()
-	lastProgressSave := time.Now()
+	lastSave := time.Now()
 
-	for progress.RowsExported < progress.TotalRows {
-		// Query with cursor
+	for {
+
 		query := fmt.Sprintf(`
-            SELECT * FROM `+"`%s`"+` 
-            WHERE id > ? 
-            ORDER BY id 
-            LIMIT ?
-        `, progress.TableName)
+			SELECT * FROM `+"`%s`"+`
+			WHERE `+"`%s`"+` > ?
+			ORDER BY `+"`%s`"+`
+			LIMIT ?
+		`, progress.TableName, pkColumn, pkColumn)
 
-		rows, err := re.db.Query(query, progress.LastExportedID, batchSize)
+		rows, err := re.db.Query(query, progress.LastExportedValue, batchSize)
 		if err != nil {
 			progress.Status = "failed"
 			re.saveProgress(progress)
 			return err
 		}
 
-		batchCount := 0
-		var lastID int64
+		count := 0
+		var batchLastVal string
 
 		for rows.Next() {
-			// Create value holders
+
 			values := make([]interface{}, len(columns))
-			valuePtrs := make([]interface{}, len(columns))
+			ptrs := make([]interface{}, len(columns))
 			for i := range values {
-				valuePtrs[i] = &values[i]
+				ptrs[i] = &values[i]
 			}
 
-			if err := rows.Scan(valuePtrs...); err != nil {
-				rows.Close()
-				progress.Status = "failed"
-				re.saveProgress(progress)
-				return err
-			}
-
-			// Build INSERT statement
-			insertStmt := re.buildInsertStatement(progress.TableName, columns, values, columnTypes)
-			if _, err := writer.WriteString(insertStmt); err != nil {
+			if err := rows.Scan(ptrs...); err != nil {
 				rows.Close()
 				return err
 			}
 
-			batchCount++
-
-			// Try to get ID from values (assuming first column is ID)
-			if id, ok := values[0].(int64); ok {
-				lastID = id
+			// SAFE PK extraction
+			val := values[pkIndex]
+			switch v := val.(type) {
+			case int64:
+				batchLastVal = fmt.Sprintf("%d", v)
+			case int32:
+				batchLastVal = fmt.Sprintf("%d", v)
+			case int:
+				batchLastVal = fmt.Sprintf("%d", v)
+			case []byte:
+				batchLastVal = string(v)
+			case string:
+				batchLastVal = v
+			default:
+				batchLastVal = fmt.Sprintf("%v", v)
 			}
+
+			buffer = append(buffer, re.buildValuesOnly(values, columnTypes))
+
+			if len(buffer) >= bulkSize {
+				re.writeBulkInsert(writer, progress.TableName, columns, buffer)
+				buffer = buffer[:0]
+			}
+
+			count++
 		}
 
 		rows.Close()
 
-		if batchCount == 0 {
+		if count == 0 {
 			break
 		}
 
-		// Update progress
-		progress.RowsExported += int64(batchCount)
-		progress.LastExportedID = lastID
+		// flush remaining
+		if len(buffer) > 0 {
+			re.writeBulkInsert(writer, progress.TableName, columns, buffer)
+			buffer = buffer[:0]
+		}
+
+		// 🔥 DUPLICATE FIX
+		if batchLastVal == progress.LastExportedValue {
+			log.Printf("Duplicate cursor detected → stopping %s", progress.TableName)
+			break
+		}
+
+		progress.LastExportedValue = batchLastVal
+		progress.RowsExported += int64(count)
 		progress.LastUpdate = time.Now()
 
-		// Save progress every 100,000 rows or every 30 seconds
-		if progress.RowsExported%100000 == 0 || time.Since(lastProgressSave) > 30*time.Second {
+		if progress.RowsExported%100000 == 0 || time.Since(lastSave) > 30*time.Second {
 			re.saveProgress(progress)
-			lastProgressSave = time.Now()
+			lastSave = time.Now()
 
-			// Calculate ETA
 			elapsed := time.Since(startTime)
 			rate := float64(progress.RowsExported) / elapsed.Seconds()
-			remainingRows := float64(progress.TotalRows - progress.RowsExported)
-			eta := time.Duration(remainingRows/rate) * time.Second
+			remaining := float64(progress.TotalRows - progress.RowsExported)
+			eta := time.Duration(remaining/rate) * time.Second
 
-			log.Printf("%s: %d/%d rows (%.1f%%) - Rate: %.0f rows/sec - ETA: %v",
+			log.Printf("%s: %d/%d (%.1f%%) %.0f rows/sec ETA %v",
 				progress.TableName,
 				progress.RowsExported,
 				progress.TotalRows,
@@ -219,142 +215,217 @@ func (re *ResumableExporter) exportInBatches(progress *ExportProgress, filePath 
 				eta)
 		}
 
-		// Flush writer periodically
 		if progress.RowsExported%10000 == 0 {
 			writer.Flush()
-		}
-
-		// Add small delay to prevent overwhelming
-		if progress.RowsExported > 1000000 {
-			time.Sleep(time.Millisecond * 10)
 		}
 	}
 
 	writer.WriteString(fmt.Sprintf("\n/*!40000 ALTER TABLE `%s` ENABLE KEYS */;\n", progress.TableName))
 	writer.WriteString("UNLOCK TABLES;\n")
-	writer.Flush()
 
 	progress.Status = "completed"
 	re.saveProgress(progress)
 
-	log.Printf("Completed export of %s: %d rows in %v",
-		progress.TableName, progress.RowsExported, time.Since(startTime))
+	return nil
+}
+
+//
+// ---------- FALLBACK (NO PK) ----------
+//
+
+func (re *ResumableExporter) exportWithoutPK(
+	progress *ExportProgress,
+	columns []string,
+	columnTypes []*sql.ColumnType,
+) error {
+
+	filePath := filepath.Join(re.config.OutputDir, progress.FileName)
+
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriterSize(file, 1024*1024)
+	defer writer.Flush()
+
+	writer.WriteString(fmt.Sprintf("LOCK TABLES `%s` WRITE;\n", progress.TableName))
+	writer.WriteString(fmt.Sprintf("/*!40000 ALTER TABLE `%s` DISABLE KEYS */;\n\n", progress.TableName))
+
+	query := fmt.Sprintf("SELECT * FROM `%s`", progress.TableName)
+
+	rows, err := re.db.Query(query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	bulkSize := re.config.BulkInsertSize
+	if bulkSize <= 0 {
+		bulkSize = 1000
+	}
+
+	var buffer []string
+
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		ptrs := make([]interface{}, len(columns))
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(ptrs...); err != nil {
+			return err
+		}
+
+		buffer = append(buffer, re.buildValuesOnly(values, columnTypes))
+
+		if len(buffer) >= bulkSize {
+			re.writeBulkInsert(writer, progress.TableName, columns, buffer)
+			buffer = buffer[:0]
+		}
+	}
+
+	if len(buffer) > 0 {
+		re.writeBulkInsert(writer, progress.TableName, columns, buffer)
+	}
+
+	writer.WriteString(fmt.Sprintf("\n/*!40000 ALTER TABLE `%s` ENABLE KEYS */;\n", progress.TableName))
+	writer.WriteString("UNLOCK TABLES;\n")
+
+	log.Printf("Fallback export done: %s", progress.TableName)
 
 	return nil
 }
 
-func (re *ResumableExporter) loadProgress(tableName string) *ExportProgress {
-	filename := fmt.Sprintf("%s/%s_progress.json", re.progressDir, tableName)
-	data, err := ioutil.ReadFile(filename)
+//
+// ---------- HELPERS ----------
+//
+
+func (re *ResumableExporter) getPrimaryKey(table string, columns []string) (string, int, error) {
+
+	query := `
+		SELECT COLUMN_NAME 
+		FROM INFORMATION_SCHEMA.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE()
+		AND TABLE_NAME = ?
+		AND COLUMN_KEY = 'PRI'
+		LIMIT 1
+	`
+
+	var pk string
+	err := re.db.QueryRow(query, table).Scan(&pk)
+	if err != nil {
+		return "", -1, err
+	}
+
+	for i, c := range columns {
+		if c == pk {
+			return pk, i, nil
+		}
+	}
+
+	return "", -1, fmt.Errorf("pk index not found")
+}
+
+func (re *ResumableExporter) buildValuesOnly(values []interface{}, columnTypes []*sql.ColumnType) string {
+	out := make([]string, len(values))
+
+	for i, val := range values {
+		if val == nil {
+			out[i] = "NULL"
+			continue
+		}
+
+		colType := strings.ToLower(columnTypes[i].DatabaseTypeName())
+
+		switch v := val.(type) {
+		case string:
+			s := strings.ReplaceAll(v, "\\", "\\\\")
+			s = strings.ReplaceAll(s, "'", "''")
+			out[i] = fmt.Sprintf("'%s'", s)
+
+		case []byte:
+			if strings.Contains(colType, "blob") || strings.Contains(colType, "binary") {
+				out[i] = fmt.Sprintf("FROM_BASE64('%s')", base64.StdEncoding.EncodeToString(v))
+			} else {
+				s := string(v)
+				s = strings.ReplaceAll(s, "\\", "\\\\")
+				s = strings.ReplaceAll(s, "'", "''")
+				out[i] = fmt.Sprintf("'%s'", s)
+			}
+
+		case int64:
+			out[i] = fmt.Sprintf("%d", v)
+
+		case float64:
+			out[i] = fmt.Sprintf("%v", v)
+
+		case bool:
+			if v {
+				out[i] = "1"
+			} else {
+				out[i] = "0"
+			}
+
+		default:
+			s := fmt.Sprintf("%v", v)
+			s = strings.ReplaceAll(s, "\\", "\\\\")
+			s = strings.ReplaceAll(s, "'", "''")
+			out[i] = fmt.Sprintf("'%s'", s)
+		}
+	}
+
+	return fmt.Sprintf("(%s)", strings.Join(out, ", "))
+}
+
+func (re *ResumableExporter) writeBulkInsert(writer *bufio.Writer, table string, columns []string, values []string) {
+	colList := make([]string, len(columns))
+	for i, c := range columns {
+		colList[i] = fmt.Sprintf("`%s`", c)
+	}
+
+	stmt := fmt.Sprintf(
+		"INSERT INTO `%s` (%s) VALUES\n%s;\n",
+		table,
+		strings.Join(colList, ", "),
+		strings.Join(values, ",\n"),
+	)
+
+	writer.WriteString(stmt)
+}
+
+func (re *ResumableExporter) loadProgress(table string) *ExportProgress {
+	file := fmt.Sprintf("%s/%s_progress.json", re.progressDir, table)
+	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil
 	}
-
-	var progress ExportProgress
-	if err := json.Unmarshal(data, &progress); err != nil {
+	var p ExportProgress
+	if json.Unmarshal(data, &p) != nil {
 		return nil
 	}
-
-	return &progress
+	return &p
 }
 
-func (re *ResumableExporter) saveProgress(progress *ExportProgress) {
-	filename := fmt.Sprintf("%s/%s_progress.json", re.progressDir, progress.TableName)
-	data, err := json.MarshalIndent(progress, "", "  ")
-	if err != nil {
-		log.Printf("Error saving progress: %v", err)
-		return
-	}
-
-	if err := ioutil.WriteFile(filename, data, 0644); err != nil {
-		log.Printf("Error writing progress file: %v", err)
-	}
+func (re *ResumableExporter) saveProgress(p *ExportProgress) {
+	file := fmt.Sprintf("%s/%s_progress.json", re.progressDir, p.TableName)
+	data, _ := json.MarshalIndent(p, "", "  ")
+	os.WriteFile(file, data, 0644)
 }
 
-func (re *ResumableExporter) getTableColumns(tableName string) ([]string, []*sql.ColumnType, error) {
-	query := fmt.Sprintf("SELECT * FROM `%s` LIMIT 0", tableName)
-	rows, err := re.db.Query(query)
+func (re *ResumableExporter) getTableColumns(table string) ([]string, []*sql.ColumnType, error) {
+	rows, err := re.db.Query(fmt.Sprintf("SELECT * FROM `%s` LIMIT 0", table))
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 
-	columnTypes, err := rows.ColumnTypes()
-	if err != nil {
-		return nil, nil, err
+	ct, _ := rows.ColumnTypes()
+	cols := make([]string, len(ct))
+	for i, c := range ct {
+		cols[i] = c.Name()
 	}
-
-	columns := make([]string, len(columnTypes))
-	for i, ct := range columnTypes {
-		columns[i] = ct.Name()
-	}
-
-	return columns, columnTypes, nil
-}
-
-func (re *ResumableExporter) buildInsertStatement(tableName string, columns []string,
-	values []interface{}, columnTypes []*sql.ColumnType) string {
-
-	// Build column list
-	columnList := make([]string, len(columns))
-	for i, col := range columns {
-		columnList[i] = fmt.Sprintf("`%s`", col)
-	}
-
-	// Build value list
-	valueStrings := make([]string, len(values))
-	for i, val := range values {
-		if val == nil {
-			valueStrings[i] = "NULL"
-			continue
-		}
-
-		colType := columnTypes[i].DatabaseTypeName()
-
-		switch v := val.(type) {
-		case string:
-			escaped := strings.ReplaceAll(v, "\\", "\\\\")
-			escaped = strings.ReplaceAll(escaped, "'", "''")
-			valueStrings[i] = fmt.Sprintf("'%s'", escaped)
-
-		case []byte:
-			isBinary := strings.Contains(strings.ToLower(colType), "blob") ||
-				strings.Contains(strings.ToLower(colType), "binary")
-
-			if isBinary {
-				encoded := base64.StdEncoding.EncodeToString(v)
-				valueStrings[i] = fmt.Sprintf("FROM_BASE64('%s')", encoded)
-			} else {
-				str := string(v)
-				escaped := strings.ReplaceAll(str, "\\", "\\\\")
-				escaped = strings.ReplaceAll(escaped, "'", "''")
-				valueStrings[i] = fmt.Sprintf("'%s'", escaped)
-			}
-
-		case int, int8, int16, int32, int64:
-			valueStrings[i] = fmt.Sprintf("%d", v)
-
-		case uint, uint8, uint16, uint32, uint64:
-			valueStrings[i] = fmt.Sprintf("%d", v)
-
-		case float32, float64:
-			valueStrings[i] = fmt.Sprintf("%v", v)
-
-		case bool:
-			if v {
-				valueStrings[i] = "1"
-			} else {
-				valueStrings[i] = "0"
-			}
-
-		default:
-			str := fmt.Sprintf("%v", v)
-			escaped := strings.ReplaceAll(str, "\\", "\\\\")
-			escaped = strings.ReplaceAll(escaped, "'", "''")
-			valueStrings[i] = fmt.Sprintf("'%s'", escaped)
-		}
-	}
-
-	return fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s);\n",
-		tableName, strings.Join(columnList, ", "), strings.Join(valueStrings, ", "))
+	return cols, ct, nil
 }

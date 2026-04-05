@@ -86,16 +86,6 @@ func (d *DesignExporter) ExportTables(tables []string) error {
 		writer.WriteString(createTable)
 		writer.WriteString(";\n\n")
 
-		// Indexes
-		// indexes, err := d.getTableIndexes(table)
-		// if err == nil && len(indexes) > 0 {
-		// 	writer.WriteString(fmt.Sprintf("-- Indexes for %s\n", table))
-		// 	for _, index := range indexes {
-		// 		writer.WriteString(index)
-		// 		writer.WriteString(";\n")
-		// 	}
-		// 	writer.WriteString("\n")
-		// }
 	}
 
 	// =========================

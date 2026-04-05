@@ -20,6 +20,10 @@ type StreamingExporter struct {
 	workerCount int
 }
 
+type RowData struct {
+	Values []interface{}
+}
+
 func NewStreamingExporter(db *sql.DB, config *ExporterConfig, workerCount int) *StreamingExporter {
 	return &StreamingExporter{
 		db:          db,
@@ -29,160 +33,169 @@ func NewStreamingExporter(db *sql.DB, config *ExporterConfig, workerCount int) *
 }
 
 func (se *StreamingExporter) ExportLargeTable(tableName string) error {
-	log.Printf("Starting streaming export for table: %s", tableName)
 
-	// Get total rows for progress tracking
+	log.Printf("Streaming export started: %s", tableName)
+
 	var totalRows int64
-	err := se.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM `%s`", tableName)).Scan(&totalRows)
-	if err != nil {
+	if err := se.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM `%s`", tableName)).Scan(&totalRows); err != nil {
 		return err
 	}
 
 	if totalRows == 0 {
-		log.Printf("Table %s is empty", tableName)
 		return nil
 	}
 
-	// Create channel for row data
-	rowChan := make(chan RowData, se.workerCount*10)
-	errChan := make(chan error, se.workerCount+1)
-
-	// Get columns once
 	columns, columnTypes, err := se.getTableColumns(tableName)
 	if err != nil {
 		return err
 	}
 
-	// Producer: fetches rows and sends to channel
-	go se.fetchRows(tableName, columns, columnTypes, rowChan, errChan)
+	rowChan := make(chan RowData, se.workerCount*100)
+	errChan := make(chan error, se.workerCount+1)
 
-	// Consumers: write to file concurrently
+	// producer
+	go se.fetchRows(tableName, columns, rowChan, errChan)
+
+	// consumers
 	var wg sync.WaitGroup
 	for i := 0; i < se.workerCount; i++ {
 		wg.Add(1)
-		go func(workerID int) {
+		go func(id int) {
 			defer wg.Done()
-			se.writeRows(workerID, tableName, columns, columnTypes, rowChan, errChan)
+			se.writeRows(id, tableName, columns, columnTypes, rowChan, errChan)
 		}(i)
 	}
 
-	// Wait for completion
 	go func() {
 		wg.Wait()
 		close(errChan)
 	}()
 
-	// Monitor progress
-	go se.monitorProgress(tableName, totalRows, errChan)
+	go se.monitorProgress(tableName, totalRows)
 
-	// Check for errors
 	for err := range errChan {
 		if err != nil {
 			return err
 		}
 	}
 
-	log.Printf("Completed streaming export for table: %s", tableName)
+	log.Printf("Streaming export completed: %s", tableName)
 	return nil
 }
 
-type RowData struct {
-	Values []interface{}
-}
-
-func (se *StreamingExporter) fetchRows(tableName string, columns []string, columnTypes []*sql.ColumnType,
-	rowChan chan<- RowData, errChan chan<- error) {
+func (se *StreamingExporter) fetchRows(
+	table string,
+	columns []string,
+	rowChan chan<- RowData,
+	errChan chan<- error,
+) {
 	defer close(rowChan)
 
-	// Use cursor-based streaming
-	var lastID int64 = 0
+	pk, err := se.getPrimaryKey(table)
+
+	// ❌ No PK → fallback
+	if err != nil || pk == "" {
+		log.Printf("Table %s has no PK → fallback full scan", table)
+		se.fetchRowsSimple(table, rowChan, errChan)
+		return
+	}
+
+	log.Printf("Using PK `%s` for streaming: %s", pk, table)
+
+	var lastVal interface{} = 0
 	batchSize := se.config.RowsPerBatch
 
 	for {
-		// Try to use ID column if exists
 		query := fmt.Sprintf(`
-            SELECT * FROM `+"`%s`"+` 
-            WHERE id > ? 
-            ORDER BY id 
-            LIMIT ?
-        `, tableName)
+			SELECT * FROM `+"`%s`"+`
+			WHERE `+"`%s`"+` > ?
+			ORDER BY `+"`%s`"+`
+			LIMIT ?
+		`, table, pk, pk)
 
-		rows, err := se.db.Query(query, lastID, batchSize)
+		rows, err := se.db.Query(query, lastVal, batchSize)
 		if err != nil {
-			// Fallback to simple select if no ID column
-			errChan <- se.fetchRowsSimple(tableName, rowChan)
+			errChan <- err
 			return
 		}
 
-		rowCount := 0
+		count := 0
 
 		for rows.Next() {
-			// Create value holders
 			values := make([]interface{}, len(columns))
-			valuePtrs := make([]interface{}, len(columns))
+			ptrs := make([]interface{}, len(columns))
 			for i := range values {
-				valuePtrs[i] = &values[i]
+				ptrs[i] = &values[i]
 			}
 
-			if err := rows.Scan(valuePtrs...); err != nil {
+			if err := rows.Scan(ptrs...); err != nil {
 				rows.Close()
 				errChan <- err
 				return
 			}
 
-			// Send to channel
+			// update lastVal dynamically
+			for i, col := range columns {
+				if strings.EqualFold(col, pk) {
+					lastVal = extractPKValue(values[i])
+					break
+				}
+			}
+
 			rowChan <- RowData{Values: values}
-			rowCount++
+			count++
 		}
 
 		rows.Close()
 
-		if rowCount < batchSize {
+		if count == 0 {
 			break
 		}
-
-		// Update lastID (assuming first column is ID)
-		// In production, you'd need to track the actual ID value
-		lastID += int64(batchSize)
-
-		// Small delay to prevent overwhelming
-		time.Sleep(time.Millisecond * 10)
 	}
 }
 
-func (se *StreamingExporter) fetchRowsSimple(tableName string, rowChan chan<- RowData) error {
-	query := fmt.Sprintf("SELECT * FROM `%s`", tableName)
+func (se *StreamingExporter) fetchRowsSimple(
+	table string,
+	rowChan chan<- RowData,
+	errChan chan<- error,
+) {
+	query := fmt.Sprintf("SELECT * FROM `%s`", table)
+
 	rows, err := se.db.Query(query)
 	if err != nil {
-		return err
+		errChan <- err
+		return
 	}
 	defer rows.Close()
 
-	columns, _ := rows.Columns()
+	cols, _ := rows.Columns()
 
 	for rows.Next() {
-		values := make([]interface{}, len(columns))
-		valuePtrs := make([]interface{}, len(columns))
+		values := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
 		for i := range values {
-			valuePtrs[i] = &values[i]
+			ptrs[i] = &values[i]
 		}
 
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return err
+		if err := rows.Scan(ptrs...); err != nil {
+			errChan <- err
+			return
 		}
 
 		rowChan <- RowData{Values: values}
 	}
-
-	return nil
 }
 
-func (se *StreamingExporter) writeRows(workerID int, tableName string,
-	columns []string, columnTypes []*sql.ColumnType,
-	rowChan <-chan RowData, errChan chan<- error) {
+func (se *StreamingExporter) writeRows(
+	workerID int,
+	table string,
+	columns []string,
+	columnTypes []*sql.ColumnType,
+	rowChan <-chan RowData,
+	errChan chan<- error,
+) {
 
-	// Each worker writes to its own file
-	filename := fmt.Sprintf("data_%s_worker%d.sql", tableName, workerID)
+	filename := fmt.Sprintf("data_%s_worker%d.sql", table, workerID)
 	filePath := filepath.Join(se.config.OutputDir, filename)
 
 	file, err := os.Create(filePath)
@@ -195,133 +208,176 @@ func (se *StreamingExporter) writeRows(workerID int, tableName string,
 	writer := bufio.NewWriterSize(file, 1024*1024)
 	defer writer.Flush()
 
-	// Write header
-	writer.WriteString(fmt.Sprintf("-- Worker %d data for table: %s\n", workerID, tableName))
-	writer.WriteString(fmt.Sprintf("LOCK TABLES `%s` WRITE;\n", tableName))
-	writer.WriteString(fmt.Sprintf("/*!40000 ALTER TABLE `%s` DISABLE KEYS */;\n\n", tableName))
+	writer.WriteString(fmt.Sprintf("LOCK TABLES `%s` WRITE;\n", table))
+	writer.WriteString(fmt.Sprintf("/*!40000 ALTER TABLE `%s` DISABLE KEYS */;\n\n", table))
 
+	bulkSize := se.config.BulkInsertSize
+	if bulkSize <= 0 {
+		bulkSize = 1000
+	}
+
+	var buffer []string
 	rowCount := 0
-	for rowData := range rowChan {
-		insertStmt := se.buildInsertStatement(tableName, columns, rowData.Values, columnTypes)
-		if _, err := writer.WriteString(insertStmt); err != nil {
-			errChan <- err
-			return
+
+	for row := range rowChan {
+
+		valStr := se.buildValuesOnly(row.Values, columnTypes)
+		buffer = append(buffer, valStr)
+
+		if len(buffer) >= bulkSize {
+			se.writeBulkInsert(writer, table, columns, buffer)
+			buffer = buffer[:0]
 		}
 
 		rowCount++
 
-		// Flush every 1000 rows
-		if rowCount%1000 == 0 {
+		if rowCount%10000 == 0 {
 			writer.Flush()
 		}
 	}
 
-	writer.WriteString(fmt.Sprintf("\n/*!40000 ALTER TABLE `%s` ENABLE KEYS */;\n", tableName))
-	writer.WriteString("UNLOCK TABLES;\n")
-
-	log.Printf("Worker %d wrote %d rows for table %s", workerID, rowCount, tableName)
-}
-
-func (se *StreamingExporter) buildInsertStatement(tableName string, columns []string,
-	values []interface{}, columnTypes []*sql.ColumnType) string {
-
-	// Build column list
-	columnList := make([]string, len(columns))
-	for i, col := range columns {
-		columnList[i] = fmt.Sprintf("`%s`", col)
+	if len(buffer) > 0 {
+		se.writeBulkInsert(writer, table, columns, buffer)
 	}
 
-	// Build value list
-	valueStrings := make([]string, len(values))
+	writer.WriteString(fmt.Sprintf("\n/*!40000 ALTER TABLE `%s` ENABLE KEYS */;\n", table))
+	writer.WriteString("UNLOCK TABLES;\n")
+
+	log.Printf("Worker %d wrote %d rows", workerID, rowCount)
+}
+
+// ---------- BULK ----------
+
+func (se *StreamingExporter) buildValuesOnly(values []interface{}, columnTypes []*sql.ColumnType) string {
+	out := make([]string, len(values))
+
 	for i, val := range values {
 		if val == nil {
-			valueStrings[i] = "NULL"
+			out[i] = "NULL"
 			continue
 		}
 
-		colType := columnTypes[i].DatabaseTypeName()
+		colType := strings.ToLower(columnTypes[i].DatabaseTypeName())
 
 		switch v := val.(type) {
 		case string:
-			escaped := strings.ReplaceAll(v, "\\", "\\\\")
-			escaped = strings.ReplaceAll(escaped, "'", "''")
-			valueStrings[i] = fmt.Sprintf("'%s'", escaped)
+			s := strings.ReplaceAll(v, "\\", "\\\\")
+			s = strings.ReplaceAll(s, "'", "''")
+			out[i] = fmt.Sprintf("'%s'", s)
 
 		case []byte:
-			isBinary := strings.Contains(strings.ToLower(colType), "blob") ||
-				strings.Contains(strings.ToLower(colType), "binary")
-
-			if isBinary {
-				encoded := base64.StdEncoding.EncodeToString(v)
-				valueStrings[i] = fmt.Sprintf("FROM_BASE64('%s')", encoded)
+			if strings.Contains(colType, "blob") || strings.Contains(colType, "binary") {
+				out[i] = fmt.Sprintf("FROM_BASE64('%s')", base64.StdEncoding.EncodeToString(v))
 			} else {
-				str := string(v)
-				escaped := strings.ReplaceAll(str, "\\", "\\\\")
-				escaped = strings.ReplaceAll(escaped, "'", "''")
-				valueStrings[i] = fmt.Sprintf("'%s'", escaped)
+				s := string(v)
+				s = strings.ReplaceAll(s, "\\", "\\\\")
+				s = strings.ReplaceAll(s, "'", "''")
+				out[i] = fmt.Sprintf("'%s'", s)
 			}
 
-		case int, int8, int16, int32, int64:
-			valueStrings[i] = fmt.Sprintf("%d", v)
+		case int64:
+			out[i] = fmt.Sprintf("%d", v)
 
-		case uint, uint8, uint16, uint32, uint64:
-			valueStrings[i] = fmt.Sprintf("%d", v)
-
-		case float32, float64:
-			valueStrings[i] = fmt.Sprintf("%v", v)
+		case float64:
+			out[i] = fmt.Sprintf("%v", v)
 
 		case bool:
 			if v {
-				valueStrings[i] = "1"
+				out[i] = "1"
 			} else {
-				valueStrings[i] = "0"
+				out[i] = "0"
 			}
 
 		default:
-			str := fmt.Sprintf("%v", v)
-			escaped := strings.ReplaceAll(str, "\\", "\\\\")
-			escaped = strings.ReplaceAll(escaped, "'", "''")
-			valueStrings[i] = fmt.Sprintf("'%s'", escaped)
+			s := fmt.Sprintf("%v", v)
+			s = strings.ReplaceAll(s, "\\", "\\\\")
+			s = strings.ReplaceAll(s, "'", "''")
+			out[i] = fmt.Sprintf("'%s'", s)
 		}
 	}
 
-	return fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s);\n",
-		tableName, strings.Join(columnList, ", "), strings.Join(valueStrings, ", "))
+	return fmt.Sprintf("(%s)", strings.Join(out, ", "))
 }
 
-func (se *StreamingExporter) getTableColumns(tableName string) ([]string, []*sql.ColumnType, error) {
-	query := fmt.Sprintf("SELECT * FROM `%s` LIMIT 0", tableName)
-	rows, err := se.db.Query(query)
+func (se *StreamingExporter) writeBulkInsert(
+	writer *bufio.Writer,
+	table string,
+	columns []string,
+	values []string,
+) {
+	colList := make([]string, len(columns))
+	for i, c := range columns {
+		colList[i] = fmt.Sprintf("`%s`", c)
+	}
+
+	stmt := fmt.Sprintf(
+		"INSERT INTO `%s` (%s) VALUES\n%s;\n",
+		table,
+		strings.Join(colList, ", "),
+		strings.Join(values, ",\n"),
+	)
+
+	writer.WriteString(stmt)
+}
+
+// ---------- PK ----------
+
+func (se *StreamingExporter) getPrimaryKey(table string) (string, error) {
+	query := `
+	SELECT COLUMN_NAME
+	FROM INFORMATION_SCHEMA.COLUMNS
+	WHERE TABLE_SCHEMA = DATABASE()
+	AND TABLE_NAME = ?
+	AND COLUMN_KEY = 'PRI'
+	LIMIT 1
+	`
+
+	var pk string
+	err := se.db.QueryRow(query, table).Scan(&pk)
+	if err != nil {
+		return "", err
+	}
+
+	return pk, nil
+}
+
+func extractPKValue(v interface{}) interface{} {
+	switch t := v.(type) {
+	case int64:
+		return t
+	case int32:
+		return int64(t)
+	case []byte:
+		return string(t)
+	case string:
+		return t
+	default:
+		return t
+	}
+}
+
+// ---------- UTIL ----------
+
+func (se *StreamingExporter) getTableColumns(table string) ([]string, []*sql.ColumnType, error) {
+	rows, err := se.db.Query(fmt.Sprintf("SELECT * FROM `%s` LIMIT 0", table))
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 
-	columnTypes, err := rows.ColumnTypes()
-	if err != nil {
-		return nil, nil, err
+	ct, _ := rows.ColumnTypes()
+	cols := make([]string, len(ct))
+	for i, c := range ct {
+		cols[i] = c.Name()
 	}
-
-	columns := make([]string, len(columnTypes))
-	for i, ct := range columnTypes {
-		columns[i] = ct.Name()
-	}
-
-	return columns, columnTypes, nil
+	return cols, ct, nil
 }
 
-func (se *StreamingExporter) monitorProgress(tableName string, totalRows int64, errChan chan error) {
-	// This is a simple progress monitor - you could enhance this
+func (se *StreamingExporter) monitorProgress(table string, total int64) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// Check if we're still processing
-		select {
-		case <-errChan:
-			return
-		default:
-			log.Printf("Still exporting %s... (total rows: %d)", tableName, totalRows)
-		}
+		log.Printf("Streaming %s... total rows: %d", table, total)
 	}
 }

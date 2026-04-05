@@ -14,18 +14,45 @@
 
 
 ./mysqltool export-parallel \
-  --host 127.01.184.128 \
+  --host 127.0.0.1 \
   --port 3306 \
   --strategy parallel \
-  --user g222222 \
-  --password "7D222!" \
-  --database tensoney \
-  --output ./bac_me3 \
-  --workers 30 \
+  --user root \
+  --password "111" \
+  --database 11111 \
+  --output ./11111 \
+  --workers 12 \
   --partitions 16 \
   --strategy parallel \
   --rows-per-batch 50000
+  --bulk-size 1000
 
+
+  ./mysqltool import \
+  --host 127.0.0.1 \
+  --port 3306 \
+  --user root \
+  --password "111111111" \
+  --database v1 \
+  --input /home/vicky/Desktop/m3 \
+  --workers 2
+
+
+
+
+  ./mysqltool export-parallel \
+  --host 127.0.0.1 \
+  --port 3306 \
+  --strategy parallel \
+  --user root \
+  --password "111111@1111111" \
+  --database funding_manage \
+  --output ./m122 \
+  --workers 12 \
+  --partitions 16 \
+  --strategy streaming \
+  --rows-per-batch 50000
+  --bulk-size 1000
 
 
 
@@ -34,12 +61,12 @@ go build -o mysqltool main.go
 
 # Run the export
 ./mysqltool export \
-  --host 91.89.184.128 \
+  --host 1.1.1.1.1 \
   --port 3306 \
   --user e423232332 \
-  --password "7D3GqL7*!" \
-  --database tens_tensormoney \
-  --output ./backup_optimized \
+  --password "711111111!" \
+  --database 1111 \
+  --output ./11111111 \
   --workers 8 \
   --strategy parallel \
   --rows-per-batch 50000

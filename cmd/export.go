@@ -12,14 +12,18 @@ import (
 )
 
 var (
-	exportDir     string
-	workers       int
-	rowsPerBatch  int
-	compress      bool
-	includeData   bool
-	includeDesign bool
-	tables        []string
-	excludeTables []string
+	exportDir           string
+	workers             int
+	rowsPerBatch        int
+	compress            bool
+	includeData         bool
+	includeDesign       bool
+	tables              []string
+	excludeTables       []string
+	bulkInsertSize      int
+	chunkByPK           bool
+	noLock              bool
+	smallTableThreshold int
 )
 
 var exportCmd = &cobra.Command{
@@ -35,6 +39,16 @@ The export creates separate files for:
 		if workers <= 0 {
 			log.Fatal("Workers must be greater than 0")
 		}
+
+		if bulkInsertSize <= 0 {
+			log.Fatal("Bulk insert size must be greater than 0")
+		}
+
+		if bulkInsertSize > rowsPerBatch {
+			log.Println("⚠️ bulk-size > rows-per-batch, adjusting to rows-per-batch")
+			bulkInsertSize = rowsPerBatch
+		}
+
 		if rowsPerBatch <= 0 {
 			log.Fatal("Rows per batch must be greater than 0")
 		}
@@ -87,9 +101,12 @@ func init() {
 	exportCmd.Flags().StringVar(&exportDir, "output", "./export", "Output directory")
 	exportCmd.Flags().IntVar(&workers, "workers", 4, "Number of concurrent workers for data export")
 	exportCmd.Flags().IntVar(&rowsPerBatch, "rows-per-batch", 10000, "Number of rows per batch for data export")
+	exportCmd.Flags().IntVar(&bulkInsertSize, "bulk-size", 1000, "Rows per bulk INSERT")
 	exportCmd.Flags().BoolVar(&compress, "compress", false, "Compress output files")
 	exportCmd.Flags().BoolVar(&includeData, "include-data", true, "Include table data in export")
 	exportCmd.Flags().BoolVar(&includeDesign, "include-design", true, "Include database design in export")
 	exportCmd.Flags().StringSliceVar(&tables, "tables", []string{}, "Specific tables to export (comma-separated)")
 	exportCmd.Flags().StringSliceVar(&excludeTables, "exclude-tables", []string{}, "Tables to exclude from export")
+	exportCmd.Flags().BoolVar(&noLock, "no-lock", false, "Disable table locking (for live DB)")
+	exportCmd.Flags().BoolVar(&chunkByPK, "chunk-by-pk", false, "Use primary key chunking instead of OFFSET")
 }

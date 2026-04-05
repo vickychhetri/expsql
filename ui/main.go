@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"log"
 	"runtime"
 
 	"fyne.io/fyne/v2"
@@ -21,6 +22,14 @@ type App struct {
 
 func StartGUI() {
 	myApp := app.NewWithID("com.mysqltool.datastream")
+
+	icon, err := fyne.LoadResourceFromPath("assets/icon.png")
+	if err != nil {
+		log.Println("icon load failed:", err)
+	} else {
+		myApp.SetIcon(icon)
+	}
+
 	myWindow := myApp.NewWindow("MySQL DataStream")
 	myWindow.Resize(fyne.NewSize(1000, 700))
 	myWindow.CenterOnScreen()
@@ -41,10 +50,8 @@ func StartGUI() {
 func (a *App) setupUI() {
 	navBar := a.createNavBar()
 
-	// default view
 	a.CurrentView = a.createDashboard()
 
-	// ✅ container to swap views
 	a.ContentContainer = container.NewStack(a.CurrentView)
 
 	statusContainer := container.NewBorder(
@@ -64,72 +71,35 @@ func (a *App) setupUI() {
 		statusContainer,
 		nil,
 		nil,
-		a.ContentContainer, // ✅ use stack
+		a.ContentContainer,
 	)
 
 	a.Window.SetContent(mainContainer)
 }
 
 func (a *App) createNavBar() *fyne.Container {
-	dashboardBtn := widget.NewButtonWithIcon("Dashboard", theme.HomeIcon(), func() {
-		a.CurrentView = a.createDashboard()
-		a.updateContent()
-	})
 
-	exportBtn := widget.NewButtonWithIcon("Export", theme.DownloadIcon(), func() {
-		a.CurrentView = a.createExportView()
-		a.updateContent()
-	})
-
-	importBtn := widget.NewButtonWithIcon("Import", theme.UploadIcon(), func() {
-		a.CurrentView = a.createImportView()
-		a.updateContent()
-	})
-
-	settingsBtn := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), func() {
-		a.CurrentView = a.createSettingsView()
-		a.updateContent()
-	})
-
-	aboutBtn := widget.NewButtonWithIcon("About", theme.InfoIcon(), func() {
-		a.CurrentView = a.createAboutView()
-		a.updateContent()
-	})
+	makeBtn := func(label string, icon fyne.Resource, view func() fyne.CanvasObject) *widget.Button {
+		return widget.NewButtonWithIcon(label, icon, func() {
+			a.CurrentView = view()
+			a.updateContent()
+		})
+	}
 
 	return container.NewHBox(
-		dashboardBtn,
-		exportBtn,
-		importBtn,
-		settingsBtn,
-		aboutBtn,
+		makeBtn("Dashboard", theme.HomeIcon(), a.createDashboard),
+		makeBtn("Export", theme.DownloadIcon(), a.createExportView),
+		makeBtn("Import", theme.UploadIcon(), a.createImportView),
+		makeBtn("Settings", theme.SettingsIcon(), a.createSettingsView),
+		makeBtn("About", theme.InfoIcon(), a.createAboutView),
 	)
 }
 
 func (a *App) updateContent() {
 	a.ContentContainer.Objects = []fyne.CanvasObject{a.CurrentView}
 	a.ContentContainer.Refresh()
-
 	a.updateStatus("View updated")
 }
-
-// func (a *App) updateContent() {
-// 	// Get the current content container
-// 	currentContent := a.Window.Content()
-
-// 	// Create new container with updated view
-// 	// The current container has 3 parts: top (navbar), bottom (status), center (content)
-// 	if currentContainer, ok := currentContent.(*fyne.Container); ok && len(currentContainer.Objects) >= 3 {
-// 		newContainer := container.NewBorder(
-// 			currentContainer.Objects[0], // navbar (top)
-// 			currentContainer.Objects[1], // status bar (bottom)
-// 			nil,                         // left
-// 			nil,                         // right
-// 			a.CurrentView,               // new center content
-// 		)
-// 		a.Window.SetContent(newContainer)
-// 	}
-// 	a.updateStatus("View updated")
-// }
 
 func (a *App) updateStatus(message string) {
 	a.StatusBar.SetText(message)
