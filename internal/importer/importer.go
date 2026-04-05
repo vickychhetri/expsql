@@ -180,33 +180,6 @@ func (i *Importer) importData() error {
 	return nil
 }
 
-// func (i *Importer) executeSQLFile(filePath string) error {
-// 	cmd := exec.Command(
-// 		"mysql",
-// 		"-h",
-// 		"-P", "3306",
-// 		"-u", "root",
-// 		"-p"+"Sonika@1987",
-// 		"v2",
-// 	)
-
-// 	file, err := os.Open(filePath)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	defer file.Close()
-
-// 	cmd.Stdin = file
-// 	cmd.Stdout = os.Stdout
-// 	cmd.Stderr = os.Stderr
-
-// 	if err := cmd.Run(); err != nil {
-// 		return fmt.Errorf("import failed (%s): %v", filePath, err)
-// 	}
-
-// 	return nil
-// }
-
 func (i *Importer) executeSQLFile(filepath string) error {
 	content, err := ioutil.ReadFile(filepath)
 	if err != nil {
@@ -260,38 +233,6 @@ func (i *Importer) executeSQLFile(filepath string) error {
 
 	return nil
 }
-
-// func splitSQLStatements(sql string) []string {
-// 	var stmts []string
-// 	var sb strings.Builder
-
-// 	inSingle := false
-// 	inDouble := false
-
-// 	for i := 0; i < len(sql); i++ {
-// 		ch := sql[i]
-
-// 		switch ch {
-// 		case '\'':
-// 			inSingle = !inSingle
-// 		case '"':
-// 			inDouble = !inDouble
-// 		case ';':
-// 			if !inSingle && !inDouble {
-// 				stmts = append(stmts, sb.String())
-// 				sb.Reset()
-// 				continue
-// 			}
-// 		}
-// 		sb.WriteByte(ch)
-// 	}
-
-// 	if sb.Len() > 0 {
-// 		stmts = append(stmts, sb.String())
-// 	}
-
-// 	return stmts
-// }
 
 func splitSQLStatements(sqlText string) []string {
 	var stmts []string
@@ -369,30 +310,3 @@ func cleanSQL(stmt string) string {
 
 	return stmt
 }
-
-// func cleanSQL(stmt string) string {
-// 	stmt = strings.TrimSpace(stmt)
-
-// 	if stmt == "" {
-// 		return ""
-// 	}
-
-// 	// skip comments
-// 	if strings.HasPrefix(stmt, "--") {
-// 		return ""
-// 	}
-
-// 	// ❗ skip MySQL dump control statements
-// 	s := strings.ToUpper(stmt)
-
-// 	if strings.Contains(s, "DISABLE KEYS") ||
-// 		strings.Contains(s, "ENABLE KEYS") ||
-// 		strings.Contains(s, "LOCK TABLES") ||
-// 		strings.Contains(s, "UNLOCK TABLES") ||
-// 		strings.Contains(s, "SET FOREIGN_KEY_CHECKS") ||
-// 		strings.Contains(s, "SET UNIQUE_CHECKS") {
-// 		return ""
-// 	}
-
-// 	return stmt
-// }
