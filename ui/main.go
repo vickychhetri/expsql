@@ -89,7 +89,8 @@ func (a *App) createNavBar() *fyne.Container {
 	return container.NewHBox(
 		makeBtn("Dashboard", theme.HomeIcon(), a.createDashboard),
 		makeBtn("Export", theme.DownloadIcon(), a.createExportView),
-		makeBtn("Import", theme.UploadIcon(), a.createImportView),
+		makeBtn("Custom Import", theme.UploadIcon(), a.createImportView),
+		makeBtn("MySQL Client Import", theme.UploadIcon(), a.createMySQLClientImportView),
 		makeBtn("Settings", theme.SettingsIcon(), a.createSettingsView),
 		makeBtn("About", theme.InfoIcon(), a.createAboutView),
 	)
