@@ -45,7 +45,7 @@ The export creates separate files for:
 		}
 
 		if bulkInsertSize > rowsPerBatch {
-			log.Println("⚠️ bulk-size > rows-per-batch, adjusting to rows-per-batch")
+			log.Println(" bulk-size > rows-per-batch, adjusting to rows-per-batch")
 			bulkInsertSize = rowsPerBatch
 		}
 
@@ -87,10 +87,10 @@ The export creates separate files for:
 		duration := endTime.Sub(startTime)
 
 		log.Printf("\n" + strings.Repeat("=", 50))
-		log.Printf("✅ Export completed successfully!")
-		log.Printf("⏱️  Total time: %s", duration)
-		log.Printf("📅 Started: %s", startTime.Format("2006-01-02 15:04:05"))
-		log.Printf("🏁 Completed: %s", endTime.Format("2006-01-02 15:04:05"))
+		log.Printf("Export completed successfully!")
+		log.Printf("Total time: %s", duration)
+		log.Printf("Started: %s", startTime.Format("2006-01-02 15:04:05"))
+		log.Printf("Completed: %s", endTime.Format("2006-01-02 15:04:05"))
 		log.Printf(strings.Repeat("=", 50))
 	},
 }
