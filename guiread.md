@@ -16,7 +16,7 @@ sudo dnf install -y mysql-devel
 
 
 
-UBUnTU
+ 
 
 # Update Fyne to latest version
 go get fyne.io/fyne/v2@latest
@@ -36,23 +36,6 @@ xcode-select --install
 
 
 
-
-
-
-
-
-
-
-
-BASH
-
-# Install Go 1.25.8 if not already installed
-# Visit https://go.dev/dl/ to download
-
-# Clone the repository
-git clone https://github.com/yourusername/mysqltool.git
-cd mysqltool
-
 # Install dependencies
 go mod download
 go mod tidy
@@ -61,7 +44,7 @@ go mod tidy
 go build -o mysqltool main.go
 
 # Build GUI version (requires CGO for Fyne)
-CGO_ENABLED=1 go build -tags gui -o mysqltool-gui gui.go
+CGO_ENABLED=1 go build -tags gui -o exsql gui.go
 
 # Run CLI
 ./mysqltool export --database testdb
@@ -71,7 +54,7 @@ CGO_ENABLED=1 go build -tags gui -o mysqltool-gui gui.go
 
 # For production builds with optimizations
 go build -ldflags="-s -w" -o mysqltool main.go
-go build -tags gui -ldflags="-s -w" -o mysqltool-gui gui.go
+go build -tags gui -ldflags="-s -w" -o  exsql gui.go
 
 # Cross-platform build for GUI (example for Windows from Linux)
 CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc go build -tags gui -o mysqltool-gui.exe gui.go
