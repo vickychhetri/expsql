@@ -1,39 +1,79 @@
-# Makefile for building MySQL tools for Windows
+# =========================
+# Multi-OS Go Build Makefile
+# =========================
 
-# Variables
 GO := go
-BUILD_DIR := windows_build
-TARGET_CLI := $(BUILD_DIR)/mysqltool.exe
-TARGET_GUI := $(BUILD_DIR)/exsql.exe
+BUILD_DIR := build
 
-# Go build flags
+APP_CLI := mysqltool
+APP_GUI := exsql
+
+# Common flags
 LDFLAGS := -s -w
 GUI_TAGS := gui
-WINDOWS_GUI_FLAG := -H=windowsgui
 
-# Default target
-all: build-cli build-gui
+# Platforms
+PLATFORMS := \
+	linux/amd64 \
+	linux/arm64 \
+	windows/amd64 \
+	darwin/amd64 \
+	darwin/arm64
 
-# Create build directory
+# =========================
+# Helpers
+# =========================
+
+define build_cli
+	@echo "→ Building CLI for $(1)"
+	@GOOS=$(word 1,$(subst /, ,$(1))) \
+	GOARCH=$(word 2,$(subst /, ,$(1))) \
+	$(GO) build -ldflags="$(LDFLAGS)" \
+	-o $(BUILD_DIR)/$(APP_CLI)-$(word 1,$(subst /, ,$(1)))-$(word 2,$(subst /, ,$(1)))$(if $(findstring windows,$(1)),.exe,) \
+	main.go
+endef
+
+define build_gui
+	@echo "→ Building GUI for $(1)"
+	@GOOS=$(word 1,$(subst /, ,$(1))) \
+	GOARCH=$(word 2,$(subst /, ,$(1))) \
+	$(GO) build -tags $(GUI_TAGS) \
+	-ldflags="$(LDFLAGS) $(if $(findstring windows,$(1)),-H=windowsgui,)" \
+	-o $(BUILD_DIR)/$(APP_GUI)-$(word 1,$(subst /, ,$(1)))-$(word 2,$(subst /, ,$(1)))$(if $(findstring windows,$(1)),.exe,) \
+	gui.go
+endef
+
+# =========================
+# Targets
+# =========================
+
+all: clean build-all
+
 $(BUILD_DIR):
-	@mkdir -p $(BUILD_DIR)
+	mkdir -p $(BUILD_DIR)
 
-# Build CLI tool
-build-cli: $(BUILD_DIR)
-	@echo "Building CLI tool for Windows..."
-	GOOS=windows GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(TARGET_CLI) main.go
-	@echo "✅ $(TARGET_CLI) built successfully."
+build-all: $(BUILD_DIR)
+	@echo "=== Building for all platforms ==="
+	$(foreach platform,$(PLATFORMS),$(call build_cli,$(platform));)
+	$(foreach platform,$(PLATFORMS),$(call build_gui,$(platform));)
+	@echo "✅ All builds completed."
 
-# Build GUI tool
-build-gui: $(BUILD_DIR)
-	@echo "Building GUI tool for Windows..."
-	GOOS=windows GOARCH=amd64 $(GO) build -tags $(GUI_TAGS) -ldflags="$(LDFLAGS) $(WINDOWS_GUI_FLAG)" -o $(TARGET_GUI) gui.go
-	@echo "✅ $(TARGET_GUI) built successfully."
+# Individual OS builds
 
-# Clean binaries
+build-linux: $(BUILD_DIR)
+	$(call build_cli,linux/amd64)
+	$(call build_gui,linux/amd64)
+
+build-windows: $(BUILD_DIR)
+	$(call build_cli,windows/amd64)
+	$(call build_gui,windows/amd64)
+
+build-mac: $(BUILD_DIR)
+	$(call build_cli,darwin/amd64)
+	$(call build_gui,darwin/amd64)
+
+# Clean
 clean:
-	@echo "Cleaning..."
 	rm -rf $(BUILD_DIR)
-	@echo "✅ Clean done."
 
-.PHONY: all build-cli build-gui clean
+.PHONY: all build-all build-linux build-windows build-mac clean
